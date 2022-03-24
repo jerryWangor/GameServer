@@ -1,4 +1,4 @@
-package GameServer
+package tcp
 
 import (
 	"bufio"
