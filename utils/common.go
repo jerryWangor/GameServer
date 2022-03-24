@@ -1,8 +1,8 @@
 package utils
 
-import "strings"
-
-// common
+import (
+	"strings"
+)
 
 type JsonResult struct {
 	Code int16       `json:"code"`

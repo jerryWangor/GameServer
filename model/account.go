@@ -4,22 +4,31 @@ import (
 	"fmt"
 	"gameserver/utils"
 	"github.com/davecgh/go-spew/spew"
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 )
 
 var Db *sqlx.DB
 
+type Person struct {
+	UserId   int    `db:"user_id"`
+	Username string `db:"username"`
+	Sex      string `db:"sex"`
+	Email    string `db:"email"`
+}
+
 // 账号表结构
 type Account struct {
-	Accid     int
-	Account   string
-	Password  string
-	Sex       int
-	Sign_time string
+	Accid     int 		`db:"accid"`
+	Account   string	`db:"account"`
+	Password  string	`db:"password"`
+	Sex       int		`db:"sex"`
+	Sign_time string	`db:"sign_time"`
 }
 
 func init() {
 	Db = GetDb()
+	fmt.Println("init")
 }
 
 // 获取数据库连接实例-单例
@@ -34,8 +43,8 @@ func GetDb() *sqlx.DB {
 	}
 }
 
+// 获取账号信息
 func GetAccountInfo(acc string) interface{} {
-	var account []Account
 	var where = []string{}
 	if acc != "" {
 		where = append(where, spew.Sprintf("account='%s'", acc))
@@ -45,7 +54,8 @@ func GetAccountInfo(acc string) interface{} {
 		wheres = "where " + utils.GetWheres(where)
 	}
 
-	err := Db.Select(&account, "select * from person "+wheres)
+	var account []Person
+	err := Db.Select(&account, "select accid,account,password,sex,sign_time from person " + wheres)
 	if err != nil {
 		fmt.Println("exec failed, ", err)
 		return ""
@@ -56,5 +66,9 @@ func GetAccountInfo(acc string) interface{} {
 	} else {
 		return account
 	}
+}
+
+// 注册账号，写入
+func InsertAccount() {
 
 }

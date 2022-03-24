@@ -6,16 +6,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Register 结构体
-type Register struct {
-	Account  string `form:"account" binding:"required"`
-	Password string `form:"password binding:"required"`
-}
-
-// Login 结构体
-type Login struct {
-	Account  string `form:"account" binding:"required"`
-	Password string `form:"password binding:"required"`
+// Register check 结构体
+type RegisterC struct {
+	Account  string `form:"account" binding:"required,len=11"`
+	Password string `form:"password binding:"required" validate:"min=6,nefield=Account"`
+	Sex int `form:"sex" validate:"min=1,max=2"`
 }
 
 // go的http服务器，用于玩家登录，获取jwt
@@ -41,6 +36,15 @@ func MiddleWare() gin.HandlerFunc {
 	}
 }
 
+// 统一返回json数据
+func ReturnJson(c *gin.Context, httpcode int, code int, msg string, data interface{}) {
+	c.JSON(httpcode, gin.H{
+		"code": code,
+		"msg":  msg,
+		"data": data,
+	})
+}
+
 func CheckAccountFunc(c *gin.Context) {
 	account := c.Query("account")
 	if account == "" {
@@ -51,24 +55,29 @@ func CheckAccountFunc(c *gin.Context) {
 			Name: "Jerry",
 			Age:  28,
 		}
-		c.JSON(200, gin.H{
-			"code": 101,
-			"msg":  "account is null",
-			"data": data,
-		})
+		ReturnJson(c, 200, 101, "account is null", data)
 	} else {
 		// 从数据库查询是否存在相通的account，这里可以进行缓存
 		fmt.Println("account：", account)
 		var accountinfo = model.GetAccountInfo(account)
-		c.JSON(200, gin.H{
-			"code": 0,
-			"msg":  "success",
-			"data": accountinfo,
-		})
+		if accountinfo != nil {
+
+		}
+		ReturnJson(c, 200, 200, "success", accountinfo)
 	}
 }
 
 func RegisterFunc(c *gin.Context) {
+	var registerc RegisterC
+	if err := c.ShouldBindQuery(&registerc); err != nil {
+		ReturnJson(c, 200, 101, "params error", "")
+	}
+	// 判断是否注册过了
+	var accountinfo = model.GetAccountInfo(registerc.Account)
+	if accountinfo != "" {
+		ReturnJson(c, 200, 102, "account is exists", "")
+	}
+	// 注册成功写入数据库
 
 }
 
