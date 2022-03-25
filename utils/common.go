@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"crypto/md5"
+	"fmt"
 	"strings"
 )
 
@@ -18,4 +20,9 @@ func ReturnJson(code int16, msg string, data interface{}) JsonResult {
 func GetWheres(where []string) string {
 	var wheres = strings.Join(where, " and ")
 	return wheres
+}
+
+// md5加密
+func GetMd5String(b []byte) string {
+	return fmt.Sprintf("%x", md5.Sum(b))
 }

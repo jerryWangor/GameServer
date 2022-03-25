@@ -3,14 +3,21 @@ package main
 import (
 	"fmt"
 	"gameserver/model"
+	"gameserver/utils"
 	"github.com/gin-gonic/gin"
+	"time"
 )
 
 // Register check 结构体
 type RegisterC struct {
 	Account  string `form:"account" binding:"required,len=11"`
-	Password string `form:"password binding:"required" validate:"min=6,nefield=Account"`
-	Sex int `form:"sex" validate:"min=1,max=2"`
+	Password string `form:"password" binding:"required,min=6,nefield=Account"`
+	Sex int `gorm:"default:1" form:"sex" :"min=1,max=2"`
+}
+
+type LoginC struct {
+	Account  string `form:"account" binding:"required,len=11"`
+	Password string `form:"password" binding:"required,min=6,nefield=Account"`
 }
 
 // go的http服务器，用于玩家登录，获取jwt
@@ -20,7 +27,7 @@ func main() {
 	// 注册中间件
 	r.Use(MiddleWare())
 	r.GET("/check_account", CheckAccountFunc)
-	r.GET("/Register", RegisterFunc)
+	r.GET("/register", RegisterFunc)
 	r.GET("/login", LoginFunc)
 
 	r.Run(":8080")
@@ -59,11 +66,18 @@ func CheckAccountFunc(c *gin.Context) {
 	} else {
 		// 从数据库查询是否存在相通的account，这里可以进行缓存
 		fmt.Println("account：", account)
-		var accountinfo = model.GetAccountInfo(account)
-		if accountinfo != nil {
-
+		accountinfo, err := model.GetAccountInfo(account)
+		// 如果没有查到
+		if err != nil {
+			ReturnJson(c, 200, 102, "mysql select error", "")
+		} else {
+			if len(accountinfo) > 0 {
+				ReturnJson(c, 200, 103, "account exists", "")
+			} else {
+				ReturnJson(c, 200, 200, "success", "")
+			}
 		}
-		ReturnJson(c, 200, 200, "success", accountinfo)
+
 	}
 }
 
@@ -71,17 +85,70 @@ func RegisterFunc(c *gin.Context) {
 	var registerc RegisterC
 	if err := c.ShouldBindQuery(&registerc); err != nil {
 		ReturnJson(c, 200, 101, "params error", "")
+		return
 	}
 	// 判断是否注册过了
-	var accountinfo = model.GetAccountInfo(registerc.Account)
-	if accountinfo != "" {
-		ReturnJson(c, 200, 102, "account is exists", "")
+	accinfo, err := model.GetAccountInfo(registerc.Account)
+	if err == nil {
+		if len(accinfo) >0 {
+			ReturnJson(c, 200, 102, "account is exists", "")
+			return
+		}
+	} else {
+		ReturnJson(c, 200, 102, "get account error", "")
+		return
 	}
-	// 注册成功写入数据库
 
+	// 注册成功写入数据库
+	var account model.Account
+	account.Account = registerc.Account
+	account.Password = utils.GetMd5String([]byte(registerc.Password)) // md5加密
+	account.Sex = registerc.Sex
+	account.Sign_time = time.Now().Format("2006:01:02 15:04:05")
+	fmt.Println("account信息：", account)
+	lastid, err := model.InsertAccount(account)
+	if err != nil {
+		ReturnJson(c, 200, 103, "mysql insert error", "")
+	} else {
+		ReturnJson(c, 200, 200, "success", lastid)
+	}
 }
 
 func LoginFunc(c *gin.Context) {
-
 	// 获取参数，进行判断
+	var loginc LoginC
+	if err := c.ShouldBindQuery(&loginc); err != nil {
+		ReturnJson(c, 200, 101, "params error", "")
+		return
+	}
+	// 判断是否注册过了
+	accinfo, err := model.GetAccountInfo(loginc.Account)
+	if err == nil {
+		if accinfo == nil {
+			ReturnJson(c, 200, 102, "account is not register", "")
+			return
+		}
+	} else {
+		ReturnJson(c, 200, 103, "get account error", "")
+		return
+	}
+
+	// 判断密码
+	if utils.GetMd5String([]byte(loginc.Password)) != accinfo[0].Password {
+		ReturnJson(c, 200, 104, "password error", "")
+		return
+	}
+
+	// 登录成功连接redis，生成一个token保存起来
+	// 用accid和当前时间生成token
+	var token = accinfo[0].Account + string(time.Now().Unix());
+	var tokenname = "token_" + accinfo[0].Account
+	result := model.SetRedis(tokenname, token)
+	if result == false {
+		fmt.Println("token 设置失败")
+		ReturnJson(c, 200, 105, "login error", "")
+		return
+	}
+
+	ReturnJson(c, 200, 200, "login success", "")
 }
