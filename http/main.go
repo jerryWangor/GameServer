@@ -5,6 +5,7 @@ import (
 	"gameserver/model"
 	"gameserver/utils"
 	"github.com/gin-gonic/gin"
+	"strconv"
 	"time"
 )
 
@@ -29,6 +30,7 @@ func main() {
 	r.GET("/check_account", CheckAccountFunc)
 	r.GET("/register", RegisterFunc)
 	r.GET("/login", LoginFunc)
+	r.GET("/get_token", GetTokenFunc)
 
 	r.Run(":8080")
 }
@@ -139,16 +141,47 @@ func LoginFunc(c *gin.Context) {
 		return
 	}
 
-	// 登录成功连接redis，生成一个token保存起来
-	// 用accid和当前时间生成token
-	var token = accinfo[0].Account + string(time.Now().Unix());
+	// 判断是否登录过了，有token
 	var tokenname = "token_" + accinfo[0].Account
-	result := model.SetRedis(tokenname, token)
-	if result == false {
-		fmt.Println("token 设置失败")
-		ReturnJson(c, 200, 105, "login error", "")
+	_, rerr := model.GetRedisString(tokenname)
+	if rerr != false {
+		ReturnJson(c, 200, 105, "login repeat", "")
 		return
 	}
 
-	ReturnJson(c, 200, 200, "login success", "")
+	// 登录成功连接redis，生成一个token保存起来
+	// 用accid和当前时间生成token
+	var token = accinfo[0].Account + strconv.Itoa(int(time.Now().Unix()))
+	result := model.SetRedis(tokenname, token)
+	if result == false {
+		fmt.Println("token 设置失败")
+		ReturnJson(c, 200, 106, "login error", "")
+		return
+	}
+
+	// 根据分服或者其他的，返回当前请求账号需要连接的TCP服务器信息
+	var data = struct{
+		Host string
+		Port string
+	}{
+		Host: "127.0.0.1",
+		Port: "20001",
+	}
+	ReturnJson(c, 200, 200, "login success", data)
+}
+
+func GetTokenFunc (c *gin.Context) {
+	account := c.Query("account")
+	if account == "" {
+		ReturnJson(c, 200, 101, "account is null", "")
+	} else {
+		// 从redis查询token
+		var tokenname = "token_" + account
+		result, err := model.GetRedisString(tokenname)
+		if err == false {
+			ReturnJson(c, 200, 102, "get token error", "")
+		} else {
+			ReturnJson(c, 200, 200, "success", result)
+		}
+	}
 }

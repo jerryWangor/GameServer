@@ -25,7 +25,8 @@ func SetRedis(name string, value interface{}) bool {
 	// 从连接池中取出一个链接
 	c := pool.Get()
 	defer c.Close() // 应用程序必须关闭返回的连接：回收方法是activeConn中的Close
-	_, err := c.Do("Set", name, value, 0)
+	fmt.Println(name, value)
+	_, err := c.Do("Set", name, value)
 	if err != nil {
 		fmt.Println(err)
 		return false
