@@ -13,7 +13,7 @@ import (
 type RegisterC struct {
 	Account  string `form:"account" binding:"required,len=11"`
 	Password string `form:"password" binding:"required,min=6,nefield=Account"`
-	Sex int `gorm:"default:1" form:"sex" :"min=1,max=2"`
+	Sex      int    `gorm:"default:1" form:"sex" :"min=1,max=2"`
 }
 
 type LoginC struct {
@@ -47,6 +47,11 @@ func MiddleWare() gin.HandlerFunc {
 
 // 统一返回json数据
 func ReturnJson(c *gin.Context, httpcode int, code int, msg string, data interface{}) {
+	fmt.Println("返回数据", gin.H{
+		"code": code,
+		"msg":  msg,
+		"data": data,
+	})
 	c.JSON(httpcode, gin.H{
 		"code": code,
 		"msg":  msg,
@@ -92,7 +97,7 @@ func RegisterFunc(c *gin.Context) {
 	// 判断是否注册过了
 	accinfo, err := model.GetAccountInfo(registerc.Account)
 	if err == nil {
-		if len(accinfo) >0 {
+		if len(accinfo) > 0 {
 			ReturnJson(c, 200, 102, "account is exists", "")
 			return
 		}
@@ -141,13 +146,19 @@ func LoginFunc(c *gin.Context) {
 		return
 	}
 
+	// 登录成功写入日志
+	var logininfo model.AccountLogin
+	logininfo.Accid = accinfo[0].Accid
+	logininfo.Login_time = time.Now().Format("2006:01:02 15:04:05")
+	_, err = model.InsertLogin(logininfo)
+
 	// 判断是否登录过了，有token
 	var tokenname = "token_" + accinfo[0].Account
-	_, rerr := model.GetRedisString(tokenname)
-	if rerr != false {
-		ReturnJson(c, 200, 105, "login repeat", "")
-		return
-	}
+	//_, rerr := model.GetRedisString(tokenname)
+	//if rerr != false {
+	//	ReturnJson(c, 200, 105, "login repeat", "")
+	//	return
+	//}
 
 	// 登录成功连接redis，生成一个token保存起来
 	// 用accid和当前时间生成token
@@ -160,17 +171,19 @@ func LoginFunc(c *gin.Context) {
 	}
 
 	// 根据分服或者其他的，返回当前请求账号需要连接的TCP服务器信息
-	var data = struct{
-		Host string
-		Port string
+	var data = struct {
+		Host  string
+		Port  string
+		Accid int
 	}{
-		Host: "127.0.0.1",
-		Port: "20001",
+		Host:  "127.0.0.1",
+		Port:  "20001",
+		Accid: accinfo[0].Accid,
 	}
-	ReturnJson(c, 200, 200, "login success", data)
+	ReturnJson(c, 200, 200, "success", data)
 }
 
-func GetTokenFunc (c *gin.Context) {
+func GetTokenFunc(c *gin.Context) {
 	account := c.Query("account")
 	if account == "" {
 		ReturnJson(c, 200, 101, "account is null", "")

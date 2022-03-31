@@ -6,19 +6,20 @@ import (
 	"math/rand"
 	"net"
 	"strconv"
-	"time"
 )
 
 func main() {
 	var err error
-	closeChan := make(chan struct{})
+	//closeChan := make(chan struct{})
 	addr := "127.0.0.1:20001"
 
+	//conn, err := net.Dial("tcp", addr)
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
-		fmt.Println("TCP服务器监听失败：", err)
+		fmt.Println("TCP服务器连接失败：", err)
 		return
 	}
+
 	for i := 0; i < 10; i++ {
 		val := strconv.Itoa(rand.Int())
 		_, err = conn.Write([]byte(val + "\n"))
@@ -37,11 +38,11 @@ func main() {
 			return
 		}
 	}
-	_ = conn.Close()
-	for i := 0; i < 5; i++ {
-		// create idle connection
-		_, _ = net.Dial("tcp", addr)
-	}
-	closeChan <- struct{}{}
-	time.Sleep(time.Second)
+	//_ = conn.Close()
+	//for i := 0; i < 5; i++ {
+	//	// create idle connection
+	//	_, _ = net.Dial("tcp", addr)
+	//}
+	//closeChan <- struct{}{}
+	//time.Sleep(time.Second)
 }

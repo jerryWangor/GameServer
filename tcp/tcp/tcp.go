@@ -20,25 +20,53 @@ import (
 	"time"
 )
 
+// 定义主命令常量
+const (
+	LOGIN_AUTH = 1001 // 登录验证
+	SIGN_DAY   = 1002 // 每日签到
+)
+
 // Config stores tcp server properties
 type Config struct {
-	Address    string        `yaml:"address"`
-	MaxConnect uint32        `yaml:"max-connect"`
-	Timeout    time.Duration `yaml:"timeout"`
+	Address    string        `yaml:"address"`     // 监听地址
+	MaxConnect uint32        `yaml:"max-connect"` // 最大连接数
+	Timeout    time.Duration `yaml:"timeout"`     // 超时时间
 }
 
-// handler 是应用层服务器的抽象
+// Handler 是应用层服务器的抽象接口
 type Handler interface {
 	Handle(ctx context.Context, conn net.Conn)
 	Close() error
+}
+
+// ServeClient 客户端连接的抽象
+type ServeClient struct {
+	// tcp 连接
+	Conn net.Conn
+	// 认证状态，连接成功后必须在规定时间内认证，不然就主动断开
+	AuthState bool
+	// 当服务端开始发送数据时进入waiting, 阻止其它goroutine关闭连接
+	// wait.Wait是作者编写的带有最大等待时间的封装:
+	// https://github.com/HDT3213/godis/blob/master/src/lib/sync/wait/wait.go
+	Waiting wait.Wait
+}
+
+// ServeHandler 服务端处理函数
+type ServeHandler struct {
+	activeConn sync.Map       // 所有活跃连接，存的是上面的ServeClient，为什么用sync.map呢，是因为在协程里面不会被锁报错
+	closing    atomic.Boolean // 关闭状态
 }
 
 // ListenAndServeWithSignal 监听中断信号并通过 closeChan 通知服务器关闭
 func ListenAndServeWithSignal(cfg *Config, handler Handler) error {
 	closeChan := make(chan struct{})
 	sigCh := make(chan os.Signal)
+
+	// 我理解是创建一个通道，用于接收发来的信号，如果收到退出信号就发给closeChan通道，执行退出操作
+	// 比如我们ctrl+c主动关闭，就会触发，或者在linux服务器上面杀进程
 	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
+		// 这里该协程被通道阻塞了，等下次收到命令后继续执行
 		sig := <-sigCh
 		switch sig {
 		case syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGINT:
@@ -47,6 +75,7 @@ func ListenAndServeWithSignal(cfg *Config, handler Handler) error {
 	}()
 	listener, err := net.Listen("tcp", cfg.Address)
 	if err != nil {
+		log.Println("tcp服务器监听失败，", err)
 		return err
 	}
 	log.Println(fmt.Sprintf("bind: %s, start listening...", cfg.Address))
@@ -54,111 +83,95 @@ func ListenAndServeWithSignal(cfg *Config, handler Handler) error {
 	return nil
 }
 
-// 监听并提供服务，并在收到 closeChan 发来的关闭通知后关闭
+// ListenAndServe 监听并提供服务，并在收到 closeChan 发来的关闭通知后关闭
 func ListenAndServe(listener net.Listener, handler Handler, closeChan <-chan struct{}) {
 	// 监听关闭通知
 	go func() {
 		<-closeChan
-		log.Println("shutting down...")
+		log.Println("tcp server shutting down...")
 		_ = listener.Close() // 停止监听，listener.Accept()会立即返回 io.EOF
 		_ = handler.Close()  // 关闭应用层服务器
 	}()
 
 	// 在异常退出后释放资源
 	defer func() {
-		// close during unexpected error
 		_ = listener.Close()
 		_ = handler.Close()
 	}()
+
 	// 返回一个空的Context
 	ctx := context.Background()
-	var waitDone sync.WaitGroup
+	// 创建一个协程计数器
+	var wg sync.WaitGroup
 	for {
 		// 监听端口, 阻塞直到收到新连接或者出现错误
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Println("accept err", err)
+			log.Println("accept err: ", err)
 			break
 		}
 		// 开启 goroutine 来处理新连接
-		fmt.Println("accept link")
-		waitDone.Add(1)
+		log.Println("客户端连接来自:", conn.RemoteAddr().String())
+		wg.Add(1) // 计数器+1
 		go func() {
 			defer func() {
-				waitDone.Done()
+				wg.Done() // 计数器-1
 			}()
 			handler.Handle(ctx, conn)
 		}()
 	}
-	waitDone.Wait()
+	wg.Wait() // 等待，知道计数为0，意思就是等待所有子协程执行完成后再结束主协程
 }
 
-// 客户端连接的抽象
-type ServeClient struct {
-	// tcp 连接
-	Conn net.Conn
-	// 当服务端开始发送数据时进入waiting, 阻止其它goroutine关闭连接
-	// wait.Wait是作者编写的带有最大等待时间的封装:
-	// https://github.com/HDT3213/godis/blob/master/src/lib/sync/wait/wait.go
-	Waiting wait.Wait
-}
-
-// 客户端处理函数
-type ServeHandler struct {
-	activeConn sync.Map
-	closing    atomic.Boolean
-}
-
-// 处理客户端发来的消息
+// Handle 处理客户端发来的消息
 func (h *ServeHandler) Handle(ctx context.Context, conn net.Conn) {
 	// 关闭中的 handler 不会处理新连接
 	if h.closing.Get() {
 		_ = conn.Close()
 	}
 
+	// 创建客户端结构体
 	client := &ServeClient{
-		Conn: conn,
+		Conn:      conn,
+		AuthState: false,
 	}
-	// 记住仍然存活的连接
+	// 保存存活的连接到sync.map中
 	h.activeConn.Store(client, struct{}{})
 
+	// 检查认证
+	go client.CheckAuth(h)
+
+	// 从缓存中读取数据，if has
 	reader := bufio.NewReader(conn)
 	for {
-		// may occurs: client EOF, client timeout, server early close
-		msg, err := reader.ReadString('\n')
+		// 这里以\n为分隔，后期考虑用header+body来处黏包拆包
+		//msg, err := reader.ReadString('\n')
+		msg, err := reader.ReadBytes('\n')
 		if err != nil {
+			// 当在Read时，收到一个IO.EOF，代表的就是对端已经关闭了发送的通道，通常来说是发起了FIN
 			if err == io.EOF {
-				fmt.Println("connection close")
+				log.Println(client, "connection close")
+				client.Close()
 				h.activeConn.Delete(client)
 			} else {
-				fmt.Println(err)
+				log.Println("read err: ", err)
 			}
 			return
 		}
 		// 发送数据前先置为waiting状态，阻止连接被关闭
 		client.Waiting.Add(1)
-		// 模拟关闭时未完成发送的情况
-		//logger.Info("sleeping")
-		//time.Sleep(10 * time.Second
 
-		b := []byte(msg)
-		_, _ = conn.Write(b)
+		// 根据接收到的消息执行不同的操作
+		UnPackageBytes(msg)
+
 		// 发送完毕, 结束waiting
 		client.Waiting.Done()
 	}
 }
 
-// 关闭客户端连接
-func (c *ServeClient) Close() error {
-	// 等待数据发送完成或超时
-	c.Waiting.WaitWithTimeout(10 * time.Second)
-	c.Conn.Close()
-	return nil
-}
-
-// 关闭服务器
+// Close 关闭服务器处理函数
 func (h *ServeHandler) Close() error {
-	fmt.Println("handler shutting down...")
+	log.Println("ServeHandler shutting down...")
 	h.closing.Set(true)
 	// 逐个关闭连接
 	h.activeConn.Range(func(key interface{}, val interface{}) bool {
@@ -167,4 +180,40 @@ func (h *ServeHandler) Close() error {
 		return true
 	})
 	return nil
+}
+
+// Close 关闭客户端连接
+func (c *ServeClient) Close() error {
+	//// 等待数据发送完成或超时10秒后
+	//result := c.Waiting.WaitWithTimeout(10 * time.Second)
+	log.Println("主动关闭客户端:", c.Conn)
+	c.Conn.Close()
+	return nil
+}
+
+// CheckAuth 检查认证
+func (c *ServeClient) CheckAuth(handler *ServeHandler) {
+	log.Println("开始检查auth")
+	select {
+	case <-time.After(time.Second * 10):
+		if c.AuthState == false {
+			log.Println("auth认证失败")
+			// 关闭连接
+			c.Close()
+			// 移除活跃客户端
+			handler.activeConn.Delete(c)
+		}
+	}
+}
+
+// 解析消息包
+// 消息检验码 4字节
+// 消息长度	4字节
+// 身份		4字节
+// 主命令	4字节
+// 子命令	4字节
+// 加密方式	4字节
+// 消息体	4字节
+func UnPackageBytes(bytes []byte) {
+
 }
