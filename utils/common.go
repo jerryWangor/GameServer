@@ -1,7 +1,9 @@
 package utils
 
 import (
+	"bytes"
 	"crypto/md5"
+	"encoding/binary"
 	"fmt"
 	"strings"
 )
@@ -25,4 +27,18 @@ func GetWheres(where []string) string {
 // md5加密
 func GetMd5String(b []byte) string {
 	return fmt.Sprintf("%x", md5.Sum(b))
+}
+
+func IntToBytes(n int) []byte {
+	data := int64(n)
+	bytebuf := bytes.NewBuffer([]byte{})
+	binary.Write(bytebuf, binary.BigEndian, data)
+	return bytebuf.Bytes()
+}
+
+func BytesToInt(bys []byte) int {
+	bytebuff := bytes.NewBuffer(bys)
+	var data int64
+	binary.Read(bytebuff, binary.BigEndian, &data)
+	return int(data)
 }

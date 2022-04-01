@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"gameserver/tcp/sync/atomic"
 	"gameserver/tcp/sync/wait"
+	"gameserver/utils"
 	"io"
 	"log"
 	"net"
@@ -162,7 +163,7 @@ func (h *ServeHandler) Handle(ctx context.Context, conn net.Conn) {
 		client.Waiting.Add(1)
 
 		// 根据接收到的消息执行不同的操作
-		UnPackageBytes(msg)
+		UnPackageBytes(msg, client, h)
 
 		// 发送完毕, 结束waiting
 		client.Waiting.Done()
@@ -206,14 +207,80 @@ func (c *ServeClient) CheckAuth(handler *ServeHandler) {
 	}
 }
 
+// UnPackageBytes
 // 解析消息包
 // 消息检验码 4字节
 // 消息长度	4字节
-// 身份		4字节
+// 身份		8字节
 // 主命令	4字节
 // 子命令	4字节
 // 加密方式	4字节
-// 消息体	4字节
-func UnPackageBytes(bytes []byte) {
+// 消息体	N字节（字节数组：消息长度+消息+消息长度+消息）
+// 分隔符	1字节
+func UnPackageBytes(bs []byte, c *ServeClient, h Handler) {
 
+	log.Println("bytes", bs)
+	log.Println("bytes len", len(bs))
+	// 开始解析bytes
+	// 消息检验码
+	crccode := append([]byte{0, 0, 0, 0}, bs[0:4]...)
+	crccode_i := utils.BytesToInt(crccode)
+	log.Println("消息检验码", crccode_i)
+	if crccode_i != 65433 {
+		log.Println("协议错误", c)
+		c.Close()
+		return
+	}
+	// 消息长度
+	msglen := append([]byte{0, 0, 0, 0}, bs[4:8]...)
+	msglen_i := utils.BytesToInt(msglen)
+	log.Println("消息长度", msglen_i)
+
+	// 身份（账号ID或者其他）
+	accid := bs[8:16]
+	accid_i := utils.BytesToInt(accid)
+	log.Println("身份", accid_i)
+
+	// 主命令
+	mcommand := append([]byte{0, 0, 0, 0}, bs[16:20]...)
+	mcommand_i := utils.BytesToInt(mcommand)
+	log.Println("主命令", mcommand_i)
+
+	// 子命令
+	ccommand := append([]byte{0, 0, 0, 0}, bs[20:24]...)
+	ccommand_i := utils.BytesToInt(ccommand)
+	log.Println("子命令", ccommand_i)
+
+	// 加密方式
+	encrypt := append([]byte{0, 0, 0, 0}, bs[24:28]...)
+	encrypt_i := utils.BytesToInt(encrypt)
+	log.Println("加密方式", encrypt_i)
+
+	// 消息体
+	msgbody := bs[28 : len(bs)-4]
+	log.Println("消息体", msgbody)
+	// 判断
+	if len(msgbody)%8 != 0 {
+		log.Println("消息体结构错误")
+		return
+	}
+	num := len(msgbody) / 8
+	ms := 0
+	for i := 0; i < num; i++ {
+		// 每个消息前面都有个是这段消息的长度，这里先不做处理
+		ms++
+		if ms == 1 {
+			continue
+		}
+		// 取到消息体
+		tmsg := msgbody[(i * 8):((i + 1) * 8)]
+		log.Println("消息", string(tmsg))
+		ms = 0
+	}
+
+	// 剩下的是分隔符len(bs)-4
+
+	log.Println("auth检查通过")
+	c.AuthState = true
+	//log.Println("crccode", int(data))
 }
