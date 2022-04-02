@@ -38,18 +38,14 @@ type Config struct {
 type Handler interface {
 	Handle(ctx context.Context, conn net.Conn)
 	Close() error
+	NormalClose(client *ServeClient) error
 }
 
 // ServeClient 客户端连接的抽象
 type ServeClient struct {
-	// tcp 连接
-	Conn net.Conn
-	// 认证状态，连接成功后必须在规定时间内认证，不然就主动断开
-	AuthState bool
-	// 当服务端开始发送数据时进入waiting, 阻止其它goroutine关闭连接
-	// wait.Wait是作者编写的带有最大等待时间的封装:
-	// https://github.com/HDT3213/godis/blob/master/src/lib/sync/wait/wait.go
-	Waiting wait.Wait
+	Conn      net.Conn  // tcp 连接
+	AuthState bool      // 认证状态，连接成功后必须在规定时间内认证，不然就主动断开
+	Waiting   wait.Wait // 当服务端开始发送数据时进入waiting, 阻止其它goroutine关闭连接
 }
 
 // ServeHandler 服务端处理函数
@@ -89,13 +85,14 @@ func ListenAndServe(listener net.Listener, handler Handler, closeChan <-chan str
 	// 监听关闭通知
 	go func() {
 		<-closeChan
-		log.Println("tcp server shutting down...")
+		log.Println("服务器主动关闭...")
 		_ = listener.Close() // 停止监听，listener.Accept()会立即返回 io.EOF
 		_ = handler.Close()  // 关闭应用层服务器
 	}()
 
 	// 在异常退出后释放资源
 	defer func() {
+		log.Println("服务器defer关闭...")
 		_ = listener.Close()
 		_ = handler.Close()
 	}()
@@ -112,7 +109,7 @@ func ListenAndServe(listener net.Listener, handler Handler, closeChan <-chan str
 			break
 		}
 		// 开启 goroutine 来处理新连接
-		log.Println("客户端连接来自:", conn.RemoteAddr().String())
+		log.Println("客户端连接，来自:", conn.RemoteAddr().String())
 		wg.Add(1) // 计数器+1
 		go func() {
 			defer func() {
@@ -121,12 +118,12 @@ func ListenAndServe(listener net.Listener, handler Handler, closeChan <-chan str
 			handler.Handle(ctx, conn)
 		}()
 	}
-	wg.Wait() // 等待，知道计数为0，意思就是等待所有子协程执行完成后再结束主协程
+	wg.Wait() // 等待，直到计数为0，意思就是等待所有子协程执行完成后再结束主协程
 }
 
 // Handle 处理客户端发来的消息
 func (h *ServeHandler) Handle(ctx context.Context, conn net.Conn) {
-	// 关闭中的 handler 不会处理新连接
+	// 关闭中的 handler 不会处理新连接的消息
 	if h.closing.Get() {
 		_ = conn.Close()
 	}
@@ -151,9 +148,8 @@ func (h *ServeHandler) Handle(ctx context.Context, conn net.Conn) {
 		if err != nil {
 			// 当在Read时，收到一个IO.EOF，代表的就是对端已经关闭了发送的通道，通常来说是发起了FIN
 			if err == io.EOF {
-				log.Println(client, "connection close")
-				client.Close()
-				h.activeConn.Delete(client)
+				log.Println("客户端主动关闭")
+				h.NormalClose(client)
 			} else {
 				log.Println("read err: ", err)
 			}
@@ -174,10 +170,11 @@ func (h *ServeHandler) Handle(ctx context.Context, conn net.Conn) {
 func (h *ServeHandler) Close() error {
 	log.Println("ServeHandler shutting down...")
 	h.closing.Set(true)
-	// 逐个关闭连接
+	// 逐个关闭客户端连接
 	h.activeConn.Range(func(key interface{}, val interface{}) bool {
 		client := key.(*ServeClient)
 		_ = client.Close()
+		h.activeConn.Delete(key) // 这里要记住从连接池里面移除
 		return true
 	})
 	return nil
@@ -185,24 +182,29 @@ func (h *ServeHandler) Close() error {
 
 // Close 关闭客户端连接
 func (c *ServeClient) Close() error {
-	//// 等待数据发送完成或超时10秒后
-	//result := c.Waiting.WaitWithTimeout(10 * time.Second)
+	// 等待数据发送完成或超时10秒后
+	c.Waiting.WaitWithTimeout(10 * time.Second)
 	log.Println("主动关闭客户端:", c.Conn)
 	c.Conn.Close()
 	return nil
 }
 
+// NormalClose 关闭正常通信的客户端连接，一般是收到客户端关闭消息，或者验证失败，或者收到不合法消息的时候
+func (h *ServeHandler) NormalClose(c *ServeClient) error {
+	c.Waiting.WaitWithTimeout(10 * time.Second)
+	c.Close()
+	h.activeConn.Delete(c)
+	return nil
+}
+
 // CheckAuth 检查认证
-func (c *ServeClient) CheckAuth(handler *ServeHandler) {
+func (c *ServeClient) CheckAuth(h *ServeHandler) {
 	log.Println("开始检查auth")
 	select {
 	case <-time.After(time.Second * 10):
 		if c.AuthState == false {
 			log.Println("auth认证失败")
-			// 关闭连接
-			c.Close()
-			// 移除活跃客户端
-			handler.activeConn.Delete(c)
+			h.NormalClose(c)
 		}
 	}
 }
@@ -228,7 +230,7 @@ func UnPackageBytes(bs []byte, c *ServeClient, h Handler) {
 	log.Println("消息检验码", crccode_i)
 	if crccode_i != 65433 {
 		log.Println("协议错误", c)
-		c.Close()
+		h.NormalClose(c)
 		return
 	}
 	// 消息长度
@@ -279,8 +281,6 @@ func UnPackageBytes(bs []byte, c *ServeClient, h Handler) {
 	}
 
 	// 剩下的是分隔符len(bs)-4
-
 	log.Println("auth检查通过")
 	c.AuthState = true
-	//log.Println("crccode", int(data))
 }
