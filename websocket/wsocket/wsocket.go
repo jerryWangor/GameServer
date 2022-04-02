@@ -2,12 +2,11 @@ package wsocket
 
 import (
 	"errors"
+	"gameserver/websocket/websocket"
 	"log"
 	"net/http"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 const (
