@@ -2,7 +2,8 @@ package wsocket
 
 import (
 	"errors"
-	"gameserver/websocket/websocket"
+	"github.com/gorilla/websocket"
+
 	"log"
 	"net/http"
 	"sync"
